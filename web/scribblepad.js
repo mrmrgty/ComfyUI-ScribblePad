@@ -1,19 +1,15 @@
 import { app } from "/scripts/app.js";
 
 const DEFAULT_THEME = { bg: "#0f111a", fg: "#c0caf5", comment: "#565f89" };
+const PALETTE = {
+  bg: ["#0f111a", "#111111", "#1a1b26", "#202020", "#f7f7f7"],
+  fg: ["#c0caf5", "#e5e9f0", "#d8dee9", "#111111", "#f8f8f2"],
+  comment: ["#565f89", "#6b7280", "#7f8ea3", "#4b5563", "#9ca3af"],
+};
 
 function isCommentLine(line, prefix, mode) {
   if (!prefix) return false;
   return mode === "strict" ? line.startsWith(prefix) : line.trimStart().startsWith(prefix);
-}
-
-function escapeHtml(s) {
-  return (s || "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
 }
 
 async function api(path, init = {}) {
@@ -33,99 +29,46 @@ function minimizeNativeWidget(widget) {
 }
 
 let cm6Promise = null;
-async function importFrom(base) {
-  const [stateMod, viewMod, commandsMod, languageMod, searchMod, autocompMod] = await Promise.all([
-    import(`${base}/@codemirror/state@6.4.1`),
-    import(`${base}/@codemirror/view@6.28.1`),
-    import(`${base}/@codemirror/commands@6.6.0`),
-    import(`${base}/@codemirror/language@6.10.2`),
-    import(`${base}/@codemirror/search@6.5.6`),
-    import(`${base}/@codemirror/autocomplete@6.18.1`),
-  ]);
-  return { ...stateMod, ...viewMod, ...commandsMod, ...languageMod, ...searchMod, ...autocompMod };
-}
-
 async function loadCM6() {
   if (!cm6Promise) {
     cm6Promise = (async () => {
-      try {
-        return await importFrom("https://esm.sh");
-      } catch {
-        return await importFrom("https://cdn.jsdelivr.net/npm");
-      }
+      const [stateMod, viewMod, commandsMod, languageMod, searchMod, autocompMod] = await Promise.all([
+        import("https://esm.sh/@codemirror/state@6.4.1"),
+        import("https://esm.sh/@codemirror/view@6.28.1"),
+        import("https://esm.sh/@codemirror/commands@6.6.0"),
+        import("https://esm.sh/@codemirror/language@6.10.2"),
+        import("https://esm.sh/@codemirror/search@6.5.6"),
+        import("https://esm.sh/@codemirror/autocomplete@6.18.1"),
+      ]);
+      return { ...stateMod, ...viewMod, ...commandsMod, ...languageMod, ...searchMod, ...autocompMod };
     })();
   }
   return cm6Promise;
 }
 
-function setupFallbackEditor(editorHost, textWidget, getPrefix, getMode, themeInputs) {
-  const wrap = document.createElement("div");
-  wrap.style.cssText = "position:relative; min-height:340px;";
+function selectFromPalette(values, current) {
+  const el = document.createElement("select");
+  values.forEach((v) => {
+    const o = document.createElement("option");
+    o.value = v;
+    o.textContent = v;
+    el.appendChild(o);
+  });
+  if (values.includes(current)) el.value = current;
+  return el;
+}
 
-  const hl = document.createElement("pre");
-  hl.style.cssText = `margin:0; position:absolute; inset:0; pointer-events:none; white-space:pre-wrap; word-break:break-word; padding:10px; font:13px/1.45 ui-monospace, monospace;`;
-
+function setupPlainFallback(editorHost, textWidget, theme) {
   const ta = document.createElement("textarea");
   ta.value = textWidget.value || "";
-  ta.spellcheck = false;
-  ta.style.cssText = `position:absolute; inset:0; width:100%; height:100%; border:none; outline:none; resize:none; box-sizing:border-box; padding:10px; background:transparent; color:transparent; -webkit-text-fill-color:transparent; font:13px/1.45 ui-monospace, monospace;`;
-
-  const render = () => {
-    const prefix = getPrefix();
-    const mode = getMode();
-    const fg = themeInputs.fg.value;
-    const cm = themeInputs.comment.value;
-    const lines = (ta.value || "").split("\n");
-    hl.innerHTML = lines
-      .map((line) => `<span style="color:${isCommentLine(line, prefix, mode) ? cm : fg}">${escapeHtml(line || " ")}</span>`)
-      .join("\n");
-    textWidget.value = ta.value || "";
-  };
-
-  const applyTheme = () => {
-    wrap.style.background = themeInputs.bg.value;
-    ta.style.caretColor = themeInputs.fg.value;
-    render();
-  };
-
-  ta.addEventListener("input", render);
-  ta.addEventListener("scroll", () => {
-    hl.scrollTop = ta.scrollTop;
-    hl.scrollLeft = ta.scrollLeft;
-  });
-  ta.addEventListener("keydown", (ev) => {
-    if ((ev.ctrlKey || ev.metaKey) && (ev.key === "/" || ev.code === "Slash")) {
-      ev.preventDefault();
-      const prefix = getPrefix();
-      const txt = ta.value;
-      const s = ta.selectionStart;
-      const e = ta.selectionEnd;
-      const ls = txt.lastIndexOf("\n", s - 1) + 1;
-      const le = txt.indexOf("\n", e);
-      const be = le === -1 ? txt.length : le;
-      const block = txt.slice(ls, be).split("\n");
-      const all = block.every((l) => l.trimStart().startsWith(prefix));
-      const out = block.map((l) => {
-        if (!all) return `${prefix}${l}`;
-        const i = l.indexOf(prefix);
-        return i >= 0 ? l.slice(0, i) + l.slice(i + prefix.length) : l;
-      }).join("\n");
-      ta.value = txt.slice(0, ls) + out + txt.slice(be);
-      ta.selectionStart = ls;
-      ta.selectionEnd = ls + out.length;
-      render();
-    }
-  });
-
-  wrap.append(hl, ta);
-  editorHost.appendChild(wrap);
-  applyTheme();
-
+  ta.style.cssText = `width:100%; min-height:340px; box-sizing:border-box; border:none; outline:none; resize:vertical; padding:10px; background:${theme.bg}; color:${theme.fg}; font:13px/1.45 ui-monospace, monospace;`;
+  ta.addEventListener("input", () => (textWidget.value = ta.value));
+  editorHost.appendChild(ta);
   return {
-    setText(v) { ta.value = v || ""; render(); },
+    setText(v) { ta.value = v || ""; textWidget.value = ta.value; },
     getText() { return ta.value || ""; },
-    refreshComments: render,
-    applyTheme,
+    refreshComments() {},
+    applyTheme(t) { ta.style.background = t.bg; ta.style.color = t.fg; },
   };
 }
 
@@ -145,7 +88,7 @@ app.registerExtension({
 
       minimizeNativeWidget(textWidget);
 
-      const state = { presets: [], loadedPreset: "", theme: { ...DEFAULT_THEME } };
+      const state = { presets: [], theme: { ...DEFAULT_THEME } };
       const panel = document.createElement("div");
       panel.style.cssText = `display:flex; flex-direction:column; gap:6px; background:${state.theme.bg}; color:${state.theme.fg}; padding:8px; border-radius:8px;`;
 
@@ -157,20 +100,21 @@ app.registerExtension({
       const btnLoad = document.createElement("button"); btnLoad.textContent = "Load";
       const btnSave = document.createElement("button"); btnSave.textContent = "Save/Update";
       const btnDelete = document.createElement("button"); btnDelete.textContent = "Delete";
-      const btnExport = document.createElement("button"); btnExport.textContent = "Export";
-      controls.append(presetSearch, presetSelect, presetName, btnLoad, btnSave, btnDelete, btnExport);
+      controls.append(presetSearch, presetSelect, presetName, btnLoad, btnSave, btnDelete);
 
       const themeRow = document.createElement("div");
-      themeRow.style.cssText = "display:flex; gap:6px; align-items:center;";
-      const bgInput = document.createElement("input"); bgInput.type = "color"; bgInput.value = state.theme.bg;
-      const fgInput = document.createElement("input"); fgInput.type = "color"; fgInput.value = state.theme.fg;
-      const commentInput = document.createElement("input"); commentInput.type = "color"; commentInput.value = state.theme.comment;
-      themeRow.append("BG", bgInput, "FG", fgInput, "Comment", commentInput);
+      themeRow.style.cssText = "display:flex; gap:6px; align-items:center; flex-wrap:wrap;";
+      const bgSel = selectFromPalette(PALETTE.bg, state.theme.bg);
+      const fgSel = selectFromPalette(PALETTE.fg, state.theme.fg);
+      const cmSel = selectFromPalette(PALETTE.comment, state.theme.comment);
+      const resetThemeBtn = document.createElement("button");
+      resetThemeBtn.textContent = "Theme: Reset";
+      themeRow.append("BG", bgSel, "FG", fgSel, "Comment", cmSel, resetThemeBtn);
 
       const editorHost = document.createElement("div");
       editorHost.style.cssText = "border:1px solid #2a2f45; border-radius:6px; overflow:hidden; min-height:340px;";
-
       panel.append(controls, themeRow, editorHost);
+
       const host = this.addDOMWidget("scribblepad", "scribblepad", panel, { serialize: false, hideOnZoom: false });
       host.computeSize = () => [Math.max(700, this.size[0]), 500];
 
@@ -189,12 +133,10 @@ app.registerExtension({
         refreshPresetOptions();
       };
 
-      let cm = null;
-      let fallback = null;
-
       const getPrefix = () => prefixWidget?.value || "//";
       const getMode = () => modeWidget?.value || "loose";
 
+      let backend = null;
       try {
         const CM = await loadCM6();
         const {
@@ -233,12 +175,12 @@ app.registerExtension({
         });
 
         const themeExt = () => EditorView.theme({
-          "&": { backgroundColor: bgInput.value, color: fgInput.value, height: "340px" },
+          "&": { backgroundColor: bgSel.value, color: fgSel.value, height: "340px" },
           ".cm-scroller": { fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace", fontSize: "13px", lineHeight: "1.45" },
-          ".cm-content": { caretColor: fgInput.value },
-          ".cm-gutters": { backgroundColor: bgInput.value, color: "#6b7190", border: "none" },
+          ".cm-content": { caretColor: fgSel.value },
+          ".cm-gutters": { backgroundColor: bgSel.value, color: "#6b7190", border: "none" },
           ".cm-activeLine": { backgroundColor: "rgba(255,255,255,0.04)" },
-          ".cm-line.sp-comment-line": { color: commentInput.value + " !important" },
+          ".cm-line.sp-comment-line": { color: `${cmSel.value} !important` },
         });
 
         const toggleLineComment = (view) => {
@@ -276,21 +218,18 @@ app.registerExtension({
                 indentWithTab,
                 { key: "Mod-/", run: toggleLineComment },
                 { key: "Ctrl-/", run: toggleLineComment },
-                { key: "Cmd-/", run: toggleLineComment },
                 ...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...historyKeymap, ...foldKeymap, ...completionKeymap,
               ]),
               EditorView.domEventHandlers({
-                keydown: (event, view) => {
+                keydown: (event, v) => {
                   if ((event.ctrlKey || event.metaKey) && (event.key === "/" || event.code === "Slash")) {
                     event.preventDefault();
-                    return toggleLineComment(view);
+                    return toggleLineComment(v);
                   }
                   return false;
                 },
               }),
-              EditorView.updateListener.of((vu) => {
-                if (vu.docChanged) textWidget.value = vu.state.doc.toString();
-              }),
+              EditorView.updateListener.of((vu) => { if (vu.docChanged) textWidget.value = vu.state.doc.toString(); }),
               themeCompartment.of(themeExt()),
               commentCompartment.of(commentField()),
             ],
@@ -298,39 +237,38 @@ app.registerExtension({
           parent: editorHost,
         });
 
-        cm = {
-          setText(v) {
-            view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: v || "" } });
-          },
+        backend = {
+          setText(v) { view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: v || "" } }); },
           getText() { return view.state.doc.toString(); },
-          refreshComments() {
-            view.dispatch({ effects: commentCompartment.reconfigure(commentField()) });
-          },
+          refreshComments() { view.dispatch({ effects: commentCompartment.reconfigure(commentField()) }); },
           applyTheme() {
-            panel.style.background = bgInput.value;
-            panel.style.color = fgInput.value;
+            panel.style.background = bgSel.value;
+            panel.style.color = fgSel.value;
             view.dispatch({ effects: themeCompartment.reconfigure(themeExt()) });
           },
         };
-      } catch (e) {
-        console.error("[ScribblePad] CM6 unavailable; fallback editor enabled", e);
-        fallback = setupFallbackEditor(editorHost, textWidget, getPrefix, getMode, { bg: bgInput, fg: fgInput, comment: commentInput });
+      } catch (err) {
+        console.error("[ScribblePad] CM6 unavailable, using plain fallback", err);
+        backend = setupPlainFallback(editorHost, textWidget, { bg: bgSel.value, fg: fgSel.value });
       }
 
-      const active = () => cm || fallback;
+      const applyTheme = () => {
+        backend.applyTheme({ bg: bgSel.value, fg: fgSel.value, comment: cmSel.value });
+        backend.refreshComments();
+      };
 
       btnLoad.onclick = () => {
         const name = presetSelect.value;
         if (!name) return;
         const p = state.presets.find((x) => x.name === name);
         if (!p) return;
-        active()?.setText(p.text || "");
-        state.loadedPreset = name;
-        presetName.value = name;
+        backend.setText(p.text || "");
         const t = { ...DEFAULT_THEME, ...(p.theme || {}) };
-        bgInput.value = t.bg; fgInput.value = t.fg; commentInput.value = t.comment;
-        active()?.applyTheme();
-        active()?.refreshComments();
+        bgSel.value = PALETTE.bg.includes(t.bg) ? t.bg : DEFAULT_THEME.bg;
+        fgSel.value = PALETTE.fg.includes(t.fg) ? t.fg : DEFAULT_THEME.fg;
+        cmSel.value = PALETTE.comment.includes(t.comment) ? t.comment : DEFAULT_THEME.comment;
+        presetName.value = name;
+        applyTheme();
       };
 
       btnSave.onclick = async () => {
@@ -340,8 +278,8 @@ app.registerExtension({
           method: "POST",
           body: JSON.stringify({
             name,
-            text: active()?.getText() || "",
-            theme: { bg: bgInput.value, fg: fgInput.value, comment: commentInput.value },
+            text: backend.getText(),
+            theme: { bg: bgSel.value, fg: fgSel.value, comment: cmSel.value },
           }),
         });
         state.presets = data.presets || [];
@@ -357,31 +295,24 @@ app.registerExtension({
         refreshPresetOptions();
       };
 
-      btnExport.onclick = async () => {
-        const data = await api("/scribblepad/presets");
-        const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url; a.download = "scribblepad-presets.json"; a.click();
-        URL.revokeObjectURL(url);
+      [bgSel, fgSel, cmSel].forEach((el) => el.addEventListener("change", applyTheme));
+      resetThemeBtn.onclick = () => {
+        bgSel.value = DEFAULT_THEME.bg;
+        fgSel.value = DEFAULT_THEME.fg;
+        cmSel.value = DEFAULT_THEME.comment;
+        applyTheme();
       };
 
-      presetSearch.addEventListener("input", refreshPresetOptions);
-      [bgInput, fgInput, commentInput].forEach((el) => el.addEventListener("input", () => {
-        active()?.applyTheme();
-        active()?.refreshComments();
-      }));
-
-      const rehighlight = () => active()?.refreshComments();
       [prefixWidget, modeWidget].forEach((w) => {
         if (!w) return;
         const orig = w.callback;
-        w.callback = (...args) => { orig?.(...args); rehighlight(); };
+        w.callback = (...args) => { orig?.(...args); backend.refreshComments(); };
       });
 
+      presetSearch.addEventListener("input", refreshPresetOptions);
+
       await loadPresets();
-      active()?.applyTheme();
-      active()?.refreshComments();
+      applyTheme();
 
       return result;
     };

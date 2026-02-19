@@ -10,9 +10,10 @@ from .presets import PresetStore
 EXT_DIR = Path(__file__).resolve().parents[1]
 STORE = PresetStore(EXT_DIR)
 
+COMMENT_PREFIX_OPTIONS = ["//", "#", ";", "--", "%"]
+
 
 def _is_comment_line(line: str, prefix: str, mode: str) -> bool:
-    """Return True when a line should be treated as comment-only content."""
     if not prefix:
         return False
     if mode == "strict":
@@ -21,24 +22,17 @@ def _is_comment_line(line: str, prefix: str, mode: str) -> bool:
 
 
 def clean_text(text: str, comment_prefix: str = "//", comment_mode: str = "loose") -> str:
-    """Remove comment lines while preserving order and non-comment blank lines."""
     lines = (text or "").splitlines(keepends=True)
     kept = [line for line in lines if not _is_comment_line(line, comment_prefix, comment_mode)]
     return "".join(kept)
 
 
 def estimate_tokens_light(text: str) -> int:
-    """Cheap token estimate that behaves reasonably for mixed JP/EN + punctuation text."""
     units = re.findall(r"\w+|[^\w\s]", text, flags=re.UNICODE)
     return len(units) if units else 0
 
 
 def estimate_tokens_exact(text: str) -> int:
-    """
-    Optional exact path via tiktoken.
-
-    If unavailable in the runtime environment, automatically fallback to light mode.
-    """
     try:
         import tiktoken  # type: ignore
 
@@ -54,7 +48,7 @@ class ScribblePad:
         return {
             "required": {
                 "text": ("STRING", {"multiline": True, "default": ""}),
-                "comment_prefix": ("STRING", {"default": "//"}),
+                "comment_prefix": (COMMENT_PREFIX_OPTIONS, {"default": "//"}),
                 "comment_mode": (["loose", "strict"], {"default": "loose"}),
                 "token_mode": (["light", "exact"], {"default": "light"}),
             }
@@ -77,7 +71,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {"ScribblePad": "ScribblePad"}
 
 
 def _install_routes():
-    """Attach lightweight preset CRUD endpoints to PromptServer when available."""
     try:
         from server import PromptServer
     except Exception:
