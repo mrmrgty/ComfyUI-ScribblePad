@@ -12,6 +12,33 @@ function isCommentLine(line, prefix, mode) {
   return mode === "strict" ? line.startsWith(prefix) : line.trimStart().startsWith(prefix);
 }
 
+function shouldToggleComment(event) {
+  if (!(event.ctrlKey || event.metaKey)) return false;
+  if (event.code === "Slash" || event.code === "NumpadDivide") return true;
+  if (event.key === "/") return true;
+  return false;
+}
+
+function toggleLinesInText(text, selStart, selEnd, prefix) {
+  const start = Math.max(0, selStart ?? 0);
+  const end = Math.max(start, selEnd ?? start);
+  const lineStart = text.lastIndexOf("\n", start - 1) + 1;
+  const nlAfterEnd = text.indexOf("\n", end);
+  const blockEnd = nlAfterEnd === -1 ? text.length : nlAfterEnd;
+  const block = text.slice(lineStart, blockEnd);
+  const lines = block.split("\n");
+  const allCommented = lines.every((l) => l.trimStart().startsWith(prefix));
+
+  const out = lines.map((l) => {
+    if (!allCommented) return `${prefix}${l}`;
+    const i = l.indexOf(prefix);
+    return i >= 0 ? l.slice(0, i) + l.slice(i + prefix.length) : l;
+  }).join("\n");
+
+  const newText = text.slice(0, lineStart) + out + text.slice(blockEnd);
+  return { newText, newSelStart: lineStart, newSelEnd: lineStart + out.length };
+}
+
 async function api(path, init = {}) {
   const res = await fetch(path, { headers: { "Content-Type": "application/json" }, ...init });
   if (!res.ok) {
@@ -32,15 +59,27 @@ let cm6Promise = null;
 async function loadCM6() {
   if (!cm6Promise) {
     cm6Promise = (async () => {
-      const [stateMod, viewMod, commandsMod, languageMod, searchMod, autocompMod] = await Promise.all([
-        import("https://esm.sh/@codemirror/state@6.4.1"),
-        import("https://esm.sh/@codemirror/view@6.28.1"),
-        import("https://esm.sh/@codemirror/commands@6.6.0"),
-        import("https://esm.sh/@codemirror/language@6.10.2"),
-        import("https://esm.sh/@codemirror/search@6.5.6"),
-        import("https://esm.sh/@codemirror/autocomplete@6.18.1"),
-      ]);
-      return { ...stateMod, ...viewMod, ...commandsMod, ...languageMod, ...searchMod, ...autocompMod };
+      try {
+        const [stateMod, viewMod, commandsMod, languageMod, searchMod, autocompMod] = await Promise.all([
+          import("https://esm.sh/@codemirror/state@6.4.1"),
+          import("https://esm.sh/@codemirror/view@6.28.1"),
+          import("https://esm.sh/@codemirror/commands@6.6.0"),
+          import("https://esm.sh/@codemirror/language@6.10.2"),
+          import("https://esm.sh/@codemirror/search@6.5.6"),
+          import("https://esm.sh/@codemirror/autocomplete@6.18.1"),
+        ]);
+        return { ...stateMod, ...viewMod, ...commandsMod, ...languageMod, ...searchMod, ...autocompMod };
+      } catch {
+        const [stateMod, viewMod, commandsMod, languageMod, searchMod, autocompMod] = await Promise.all([
+          import("https://cdn.jsdelivr.net/npm/@codemirror/state@6.4.1/dist/index.js"),
+          import("https://cdn.jsdelivr.net/npm/@codemirror/view@6.28.1/dist/index.js"),
+          import("https://cdn.jsdelivr.net/npm/@codemirror/commands@6.6.0/dist/index.js"),
+          import("https://cdn.jsdelivr.net/npm/@codemirror/language@6.10.2/dist/index.js"),
+          import("https://cdn.jsdelivr.net/npm/@codemirror/search@6.5.6/dist/index.js"),
+          import("https://cdn.jsdelivr.net/npm/@codemirror/autocomplete@6.18.1/dist/index.js"),
+        ]);
+        return { ...stateMod, ...viewMod, ...commandsMod, ...languageMod, ...searchMod, ...autocompMod };
+      }
     })();
   }
   return cm6Promise;
@@ -58,17 +97,42 @@ function selectFromPalette(values, current) {
   return el;
 }
 
-function setupPlainFallback(editorHost, textWidget, theme) {
+function createFallbackEditor(editorHost, textWidget, getPrefix, getMode, themeValues) {
   const ta = document.createElement("textarea");
   ta.value = textWidget.value || "";
-  ta.style.cssText = `width:100%; min-height:340px; box-sizing:border-box; border:none; outline:none; resize:vertical; padding:10px; background:${theme.bg}; color:${theme.fg}; font:13px/1.45 ui-monospace, monospace;`;
-  ta.addEventListener("input", () => (textWidget.value = ta.value));
+  ta.style.cssText = `width:100%; min-height:340px; box-sizing:border-box; border:none; outline:none; resize:vertical; padding:10px; background:${themeValues.bg()}; color:${themeValues.fg()}; font:13px/1.45 ui-monospace, monospace;`;
+
+  ta.addEventListener("input", () => { textWidget.value = ta.value; });
+  ta.addEventListener("keydown", (ev) => {
+    if (shouldToggleComment(ev)) {
+      ev.preventDefault();
+      const out = toggleLinesInText(ta.value, ta.selectionStart, ta.selectionEnd, getPrefix());
+      ta.value = out.newText;
+      ta.selectionStart = out.newSelStart;
+      ta.selectionEnd = out.newSelEnd;
+      textWidget.value = ta.value;
+    }
+  });
+
   editorHost.appendChild(ta);
+
   return {
+    mode: "fallback",
     setText(v) { ta.value = v || ""; textWidget.value = ta.value; },
     getText() { return ta.value || ""; },
     refreshComments() {},
-    applyTheme(t) { ta.style.background = t.bg; ta.style.color = t.fg; },
+    applyTheme() {
+      ta.style.background = themeValues.bg();
+      ta.style.color = themeValues.fg();
+      ta.style.caretColor = themeValues.fg();
+    },
+    toggleCommentSelection() {
+      const out = toggleLinesInText(ta.value, ta.selectionStart, ta.selectionEnd, getPrefix());
+      ta.value = out.newText;
+      ta.selectionStart = out.newSelStart;
+      ta.selectionEnd = out.newSelEnd;
+      textWidget.value = ta.value;
+    },
   };
 }
 
@@ -88,9 +152,9 @@ app.registerExtension({
 
       minimizeNativeWidget(textWidget);
 
-      const state = { presets: [], theme: { ...DEFAULT_THEME } };
+      const state = { presets: [] };
       const panel = document.createElement("div");
-      panel.style.cssText = `display:flex; flex-direction:column; gap:6px; background:${state.theme.bg}; color:${state.theme.fg}; padding:8px; border-radius:8px;`;
+      panel.style.cssText = `display:flex; flex-direction:column; gap:6px; background:${DEFAULT_THEME.bg}; color:${DEFAULT_THEME.fg}; padding:8px; border-radius:8px;`;
 
       const controls = document.createElement("div");
       controls.style.cssText = "display:flex; gap:6px; align-items:center; flex-wrap:wrap;";
@@ -100,23 +164,25 @@ app.registerExtension({
       const btnLoad = document.createElement("button"); btnLoad.textContent = "Load";
       const btnSave = document.createElement("button"); btnSave.textContent = "Save/Update";
       const btnDelete = document.createElement("button"); btnDelete.textContent = "Delete";
-      controls.append(presetSearch, presetSelect, presetName, btnLoad, btnSave, btnDelete);
+      const btnComment = document.createElement("button"); btnComment.textContent = "Comment/Uncomment";
+      const status = document.createElement("span");
+      status.style.cssText = "font-size:11px; opacity:0.85; padding:2px 6px; border:1px solid #3a3f58; border-radius:999px;";
+      controls.append(presetSearch, presetSelect, presetName, btnLoad, btnSave, btnDelete, btnComment, status);
 
       const themeRow = document.createElement("div");
       themeRow.style.cssText = "display:flex; gap:6px; align-items:center; flex-wrap:wrap;";
-      const bgSel = selectFromPalette(PALETTE.bg, state.theme.bg);
-      const fgSel = selectFromPalette(PALETTE.fg, state.theme.fg);
-      const cmSel = selectFromPalette(PALETTE.comment, state.theme.comment);
-      const resetThemeBtn = document.createElement("button");
-      resetThemeBtn.textContent = "Theme: Reset";
+      const bgSel = selectFromPalette(PALETTE.bg, DEFAULT_THEME.bg);
+      const fgSel = selectFromPalette(PALETTE.fg, DEFAULT_THEME.fg);
+      const cmSel = selectFromPalette(PALETTE.comment, DEFAULT_THEME.comment);
+      const resetThemeBtn = document.createElement("button"); resetThemeBtn.textContent = "Theme: Reset";
       themeRow.append("BG", bgSel, "FG", fgSel, "Comment", cmSel, resetThemeBtn);
 
       const editorHost = document.createElement("div");
       editorHost.style.cssText = "border:1px solid #2a2f45; border-radius:6px; overflow:hidden; min-height:340px;";
-      panel.append(controls, themeRow, editorHost);
 
+      panel.append(controls, themeRow, editorHost);
       const host = this.addDOMWidget("scribblepad", "scribblepad", panel, { serialize: false, hideOnZoom: false });
-      host.computeSize = () => [Math.max(700, this.size[0]), 500];
+      host.computeSize = () => [Math.max(760, this.size[0]), 520];
 
       const refreshPresetOptions = () => {
         const q = (presetSearch.value || "").toLowerCase();
@@ -135,8 +201,10 @@ app.registerExtension({
 
       const getPrefix = () => prefixWidget?.value || "//";
       const getMode = () => modeWidget?.value || "loose";
+      const themeValues = { bg: () => bgSel.value, fg: () => fgSel.value, comment: () => cmSel.value };
 
-      let backend = null;
+      let backend;
+
       try {
         const CM = await loadCM6();
         const {
@@ -175,36 +243,32 @@ app.registerExtension({
         });
 
         const themeExt = () => EditorView.theme({
-          "&": { backgroundColor: bgSel.value, color: fgSel.value, height: "340px" },
+          "&": { backgroundColor: themeValues.bg(), color: themeValues.fg(), height: "360px" },
           ".cm-scroller": { fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace", fontSize: "13px", lineHeight: "1.45" },
-          ".cm-content": { caretColor: fgSel.value },
-          ".cm-gutters": { backgroundColor: bgSel.value, color: "#6b7190", border: "none" },
+          ".cm-content": { caretColor: themeValues.fg() },
+          ".cm-gutters": { backgroundColor: themeValues.bg(), color: "#6b7190", border: "none" },
           ".cm-activeLine": { backgroundColor: "rgba(255,255,255,0.04)" },
-          ".cm-line.sp-comment-line": { color: `${cmSel.value} !important` },
+          ".cm-line.sp-comment-line": { color: `${themeValues.comment()} !important` },
         });
 
-        const toggleLineComment = (view) => {
-          const prefix = getPrefix();
+        const toggleLineCommentCM = (view) => {
+          const sels = view.state.selection.ranges;
+          if (!sels.length) return false;
+
           const changes = [];
-          for (const range of view.state.selection.ranges) {
-            const fromLine = view.state.doc.lineAt(range.from).number;
-            const toLine = view.state.doc.lineAt(range.to).number;
-            let all = true;
-            for (let n = fromLine; n <= toLine; n++) {
-              if (!view.state.doc.line(n).text.trimStart().startsWith(prefix)) { all = false; break; }
-            }
-            for (let n = fromLine; n <= toLine; n++) {
-              const line = view.state.doc.line(n);
-              if (!all) changes.push({ from: line.from, to: line.from, insert: prefix });
-              else {
-                const i = line.text.indexOf(prefix);
-                if (i >= 0) changes.push({ from: line.from + i, to: line.from + i + prefix.length, insert: "" });
-              }
-            }
+          for (const range of sels) {
+            const out = toggleLinesInText(
+              view.state.doc.toString(),
+              range.from,
+              range.to,
+              getPrefix()
+            );
+            changes.length = 0;
+            changes.push({ from: 0, to: view.state.doc.length, insert: out.newText });
+            view.dispatch({ changes, selection: { anchor: out.newSelStart, head: out.newSelEnd }, userEvent: "input" });
+            return true;
           }
-          if (!changes.length) return false;
-          view.dispatch({ changes, userEvent: "input" });
-          return true;
+          return false;
         };
 
         const view = new EditorView({
@@ -216,15 +280,16 @@ app.registerExtension({
               highlightActiveLine(), bracketMatching(), closeBrackets(), autocompletion(), EditorView.lineWrapping,
               keymap.of([
                 indentWithTab,
-                { key: "Mod-/", run: toggleLineComment },
-                { key: "Ctrl-/", run: toggleLineComment },
+                { key: "Mod-/", run: toggleLineCommentCM },
+                { key: "Ctrl-/", run: toggleLineCommentCM },
+                { key: "Cmd-/", run: toggleLineCommentCM },
                 ...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...historyKeymap, ...foldKeymap, ...completionKeymap,
               ]),
               EditorView.domEventHandlers({
                 keydown: (event, v) => {
-                  if ((event.ctrlKey || event.metaKey) && (event.key === "/" || event.code === "Slash")) {
+                  if (shouldToggleComment(event)) {
                     event.preventDefault();
-                    return toggleLineComment(v);
+                    return toggleLineCommentCM(v);
                   }
                   return false;
                 },
@@ -238,24 +303,32 @@ app.registerExtension({
         });
 
         backend = {
+          mode: "cm6",
           setText(v) { view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: v || "" } }); },
           getText() { return view.state.doc.toString(); },
           refreshComments() { view.dispatch({ effects: commentCompartment.reconfigure(commentField()) }); },
           applyTheme() {
-            panel.style.background = bgSel.value;
-            panel.style.color = fgSel.value;
+            panel.style.background = themeValues.bg();
+            panel.style.color = themeValues.fg();
             view.dispatch({ effects: themeCompartment.reconfigure(themeExt()) });
+          },
+          toggleCommentSelection() {
+            toggleLineCommentCM(view);
           },
         };
       } catch (err) {
-        console.error("[ScribblePad] CM6 unavailable, using plain fallback", err);
-        backend = setupPlainFallback(editorHost, textWidget, { bg: bgSel.value, fg: fgSel.value });
+        console.error("[ScribblePad] CM6 unavailable, using fallback", err);
+        backend = createFallbackEditor(editorHost, textWidget, getPrefix, getMode, themeValues);
       }
 
+      status.textContent = backend.mode === "cm6" ? "CM6 active" : "Fallback active";
+
       const applyTheme = () => {
-        backend.applyTheme({ bg: bgSel.value, fg: fgSel.value, comment: cmSel.value });
+        backend.applyTheme();
         backend.refreshComments();
       };
+
+      btnComment.onclick = () => backend.toggleCommentSelection();
 
       btnLoad.onclick = () => {
         const name = presetSelect.value;
